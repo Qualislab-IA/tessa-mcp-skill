@@ -1,0 +1,116 @@
+---
+description: TESSA MCP orchestration — how to correctly use the 5 tools exposed by the TESSA MCP server (https://agent.qualis-lab.com/mcp) to list, fetch, execute, upload screenshots, and report test case results.
+alwaysApply: false
+globs:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/tessa/**"
+  - "**/e2e/**"
+---
+
+# TESSA MCP — Cursor Rule
+
+TESSA is a SaaS platform that generates AI-driven test cases and executes them via MCP-connected agents. This rule tells you the correct workflow.
+
+## Activate when
+
+- User says: "Run test case N", "Ejecutá el caso de prueba N", "List my TESSA tests", "What are the steps of case N?", "Run the happy path", "Upload screenshots to process N", "Report results".
+- User mentions TESSA, QualisLab, or automated test cases.
+- You're working on test files that reference the TESSA MCP.
+
+## MCP server
+
+- **URL**: `https://agent.qualis-lab.com/mcp`
+- **Auth**: Bearer `qai_<token>` (configured in `.cursor/mcp.json` or `~/.cursor/mcp.json`).
+
+Expected config:
+```json
+{
+  "mcpServers": {
+    "tessa": {
+      "url": "https://agent.qualis-lab.com/mcp",
+      "headers": {
+        "Authorization": "Bearer qai_XXXXXXXXXXXXXXXXXXXXXXXX"
+      }
+    }
+  }
+}
+```
+
+## Tools (5)
+
+### `list_test_cases({ page, pageSize })`
+Paginated list. Returns `{ projects: [{id,name}], pagination }`. Use when user didn't specify a `caseId`.
+
+### `fetch_test_case({ caseId })`
+Happy path detail. Returns `{ testCaseId, title, steps: [{stepNumber, action}] }`. Steps are natural language — translate to browser actions.
+
+### `fetch_additional_cases({ caseId })`
+Edge/error scenarios. Returns `{ testCaseId, totalAdditionalCases, additionalCases: [...] }`. Call only if user asked "all cases" or happy path failed.
+
+### `get_presigned_url({ fileName, contentType, caseId? })`
+Pre-signed S3 URL for uploading screenshots. **Always use this, never base64 inline.**
+- `contentType`: `image/png | image/jpeg | image/jpg | image/webp` only.
+- Returns `{ uploadUrl, publicUrl }`. PUT binary to `uploadUrl`, save `publicUrl`.
+- **Always pass `caseId`** when available.
+
+### `submit_test_result({ caseId, status, executedUrl, totalDurationMs?, steps })`
+Final report.
+- `status`: `PASS | FAIL | ERROR | SKIPPED`.
+- `steps[i]`: `{ stepNumber, description, status, durationMs?, screenshotUrl?, errorMessage? }`.
+- `screenshotUrl` must come from `get_presigned_url.publicUrl`.
+- **Global status rule**: if any step isn't PASS, global can't be PASS (worst wins: FAIL > ERROR > SKIPPED > PASS).
+
+## Correct workflow
+
+```
+1. If no caseId → list_test_cases → ask user which one.
+2. fetch_test_case.
+3. (Optional) fetch_additional_cases.
+4. **ASK FOR CONFIRMATION** with target URL + side-effect summary.
+5. For each step:
+   a. Translate step.action to browser actions.
+   b. Execute, measure durationMs.
+   c. Screenshot.
+   d. get_presigned_url → PUT binary → save publicUrl.
+   e. Record step result.
+6. submit_test_result with full steps.
+7. Summarize: global status, failures, screenshot links.
+```
+
+## Critical rules
+
+- **Never run without explicit user confirmation** — tests can hit real systems (payments, account creation). Ask with target URL + side-effects.
+- **Never assume URLs** like `https://example.com`. If missing, ask user.
+- **Screenshots via presigned PUT, not base64**. Enforced by server schema but also a performance/DB concern.
+- **Ownership is server-enforced**. Don't try to access other users' `caseId`s.
+- **Never log real passwords** in `errorMessage`. Redact as `pass=***`.
+- **Max ~100 steps per execution**. Don't parallelize wildly — no rate limiting yet.
+
+## Common errors → response
+
+| Error | Fix |
+|---|---|
+| `401 Invalid API token` | User regenerates token in TESSA settings |
+| `Invalid caseId` | Call `list_test_cases` |
+| `Invalid content type` | Convert screenshot to PNG |
+| `Process not found or not owned by caller` | Verify `caseId` with `list_test_cases` |
+
+## Conversational patterns
+
+**User**: "Ejecutá el 375 en staging.example.com"
+**You**:
+1. `fetch_test_case({ caseId: "375" })`
+2. "Voy a ejecutar 'Test QR Payment' (5 pasos) en staging.example.com. Incluye pago simulado de $500. ¿Confirmás?"
+3. (on confirm) execute loop → `submit_test_result`.
+4. Summary with global status and screenshot links.
+
+**User**: "¿Qué tests tengo?"
+**You**: `list_test_cases` → formatted list → "¿Cuál querés correr?"
+
+**User**: "Ejecutá todos los casos del 375"
+**You**:
+1. `fetch_test_case` + `fetch_additional_cases`.
+2. Confirm: "1 happy path + 4 alternativos = 5 ejecuciones. ¿OK?"
+3. Execute each as separate `submit_test_result`.
+4. Summary: "5/5 ejecutados. 3 PASS, 1 FAIL, 1 ERROR."
