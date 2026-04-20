@@ -169,6 +169,3 @@ tessa-mcp-skill/
     └── tessa-mcp-guide.md           ← Markdown genérico para cualquier IDE
 ```
 
-## Licencia
-
-Interno Qualis Lab. Si este paquete se publica al público, agregar `LICENSE` (recomendado: MIT).
