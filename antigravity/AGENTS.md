@@ -18,12 +18,17 @@ Activate this workflow when the user:
 - Wants to report results or upload screenshots.
 - Mentions TESSA, QualisLab, or automated testing.
 
-## The 5 tools
+## The 6 tools
 
-### `list_test_cases({ page, pageSize })`
-Paginated list of the user's test cases.
-→ Use FIRST when no specific `caseId` was given.
+### `list_projects({ page, pageSize })`
+Paginated list of the projects the user can access (id + name).
+→ Use FIRST to pick a project.
 Returns `{ projects: [{id, name}], pagination: {...} }`.
+
+### `list_test_cases({ projectId, page, pageSize })`
+Paginated list of the test cases in a project. **Requires `projectId`** (from `list_projects`).
+→ Use when no specific `caseId` was given, after choosing a project.
+Returns `{ projectId, projectName, cases: [{caseId, title, status}], pagination: {...} }`.
 
 ### `fetch_test_case({ caseId })`
 Happy path details.
@@ -51,7 +56,7 @@ Final execution report.
 ## End-to-end workflow
 
 ```
-1. If no caseId → list_test_cases → user chooses
+1. If no caseId → list_projects → pick project → list_test_cases({ projectId }) → user chooses
 2. fetch_test_case → get steps
 3. (Optional) fetch_additional_cases
 4. CONFIRM with user: target URL + side-effects summary
@@ -73,7 +78,7 @@ Final execution report.
 
 3. **Screenshots via presigned URLs, never base64.** Base64 inline in `submit_test_result` bloats the DB and breaks access control. Always: `get_presigned_url` → PUT to S3 → pass `publicUrl`.
 
-4. **Ownership is server-enforced.** Errors like `"Process not found or not owned by caller"` mean the `caseId` doesn't belong to your token. Don't try to work around it — verify with `list_test_cases`.
+4. **Project access is server-enforced. You only see/act on projects you're a member of.** Errors like `"Project not accessible"` or `"Test case (process) not found"` mean the project or `caseId` isn't reachable by your token. Don't try to work around it — verify with `list_projects` → `list_test_cases({ projectId })`.
 
 5. **Redact credentials.** Real passwords or API keys must NEVER appear in `errorMessage` or step descriptions. Use `pass=***` or similar.
 
@@ -83,10 +88,12 @@ Final execution report.
 
 | Error | Response |
 |---|---|
-| `401 Invalid API token` | Tell user to regenerate in TESSA → Settings → API Tokens |
-| `Invalid caseId` | Call `list_test_cases` to find valid IDs |
+| `401 Invalid API token` / `Authentication required` | Tell user to regenerate in TESSA → Settings → API Tokens |
+| `Invalid caseId` | Call `list_test_cases({ projectId })` to find valid IDs |
 | `Invalid content type` | Convert screenshot to PNG before retry |
-| `Process not found or not owned by caller` | Verify `caseId` with `list_test_cases` |
+| `Project not found` | Use `list_projects` to find valid project IDs |
+| `Project not accessible` | You're not a member of that project — pick one from `list_projects` |
+| `Test case (process) not found` / `not accessible` | Verify `caseId` with `list_test_cases({ projectId })` |
 
 ## Step failures during execution
 
@@ -113,7 +120,8 @@ Final execution report.
 
 | Tool | REST |
 |---|---|
-| `list_test_cases` | `GET /api/mcp/test-cases?page=N&pageSize=N` |
+| `list_projects` | `GET /api/mcp/projects?page=N&pageSize=N` |
+| `list_test_cases` | `GET /api/mcp/projects/:projectId/test-cases?page=N&pageSize=N` |
 | `fetch_test_case` | `GET /api/mcp/test-case/:caseId` |
 | `fetch_additional_cases` | `GET /api/mcp/test-case/:caseId/additional-cases` |
 | `get_presigned_url` | `GET /api/mcp/presigned-url?fileName=...&contentType=...&caseId=...` |

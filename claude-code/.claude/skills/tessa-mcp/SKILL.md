@@ -1,6 +1,6 @@
 ---
 name: tessa-mcp
-description: Use when the user asks to run, list, inspect, or report test cases via the TESSA MCP server (at https://agent.qualis-lab.com/mcp). Orchestrates the 5 tools (list_test_cases, fetch_test_case, fetch_additional_cases, get_presigned_url, submit_test_result) in the correct order. Triggers on mentions of TESSA, QualisLab, "test case N", "ejecutá el caso N", "happy path", or similar testing workflows.
+description: Use when the user asks to run, list, inspect, or report test cases via the TESSA MCP server (at https://agent.qualis-lab.com/mcp). Orchestrates the 6 tools (list_projects, list_test_cases, fetch_test_case, fetch_additional_cases, get_presigned_url, submit_test_result) in the correct order. Triggers on mentions of TESSA, QualisLab, "test case N", "ejecutá el caso N", "happy path", or similar testing workflows.
 ---
 
 # TESSA MCP Skill (Claude Code)
@@ -25,34 +25,40 @@ Any of these user intents:
 - Tools auto-discovered via `tools/list` on connection.
 - Ensure the MCP server is configured in `~/.claude.json` or project `.mcp.json`.
 
-## The 5 tools
+## The 6 tools
 
-### 1. `list_test_cases`
-Paginated list of the user's test cases.
+### 1. `list_projects`
+Paginated list of the **projects** the user can access (server-enforced: only projects of their company where they're a member).
 - **Input**: `{ page: number, pageSize: number }`
 - **Output**: `{ projects: [{id, name}], pagination: {...} }`
-- **Use first** when no specific `caseId` is mentioned.
+- **Use first** when no specific `caseId` is mentioned — pick a project, then list its cases.
 
-### 2. `fetch_test_case`
+### 2. `list_test_cases`
+Paginated list of the **test cases** of a project the user can access.
+- **Input**: `{ projectId: number, page: number, pageSize: number }`
+- **Output**: `{ projectId, projectName, cases: [{caseId, title, status}], pagination: {...} }`
+- Requires `projectId` (from `list_projects`). Returns cases in `PROCESADO` status. The `caseId` feeds the other tools.
+
+### 3. `fetch_test_case`
 Happy-path details of a test case.
 - **Input**: `{ caseId: string }`
 - **Output**: `{ testCaseId, title, steps: [{stepNumber, action}] }`
 - Steps are **natural language descriptions**. You translate them to concrete browser actions.
 
-### 3. `fetch_additional_cases`
+### 4. `fetch_additional_cases`
 Alternative / edge-case scenarios.
 - **Input**: `{ caseId: string }`
 - **Output**: `{ testCaseId, totalAdditionalCases, additionalCases: [...] }`
 - Call after `fetch_test_case` only if user asked for "all cases" or happy path failed.
 
-### 4. `get_presigned_url`
+### 5. `get_presigned_url`
 Generate a pre-signed S3 URL for uploading a screenshot. **Use this for every screenshot — never inline base64.**
 - **Input**: `{ fileName: string, contentType: string, caseId?: string }`
 - **Allowed contentType**: `image/png`, `image/jpeg`, `image/jpg`, `image/webp` only.
 - **Output**: `{ uploadUrl, publicUrl }` — PUT the binary to `uploadUrl` with correct `Content-Type`, then save `publicUrl`.
-- **Always pass `caseId`** when available — it organizes uploads and validates ownership.
+- **Always pass `caseId`** when available — it organizes uploads and validates project access.
 
-### 5. `submit_test_result`
+### 6. `submit_test_result`
 Final execution report.
 - **Input**: `{ caseId, status, executedUrl, totalDurationMs?, steps: [{stepNumber, description, status, durationMs?, screenshotUrl?, errorMessage?}] }`
 - **status**: one of `PASS | FAIL | ERROR | SKIPPED`.
@@ -63,7 +69,8 @@ Final execution report.
 
 ```
 1. [If no caseId given]
-   → list_test_cases
+   → list_projects
+   → list_test_cases({ projectId })   (cases of the chosen project)
    → show to user, ask which one to run
 
 2. → fetch_test_case
@@ -108,17 +115,20 @@ When a step fails:
    - Assertive failure (value mismatch): continue, next steps might pass.
    - Structural failure (element not found, timeout, network): abort remaining steps as `SKIPPED`.
 
-### Ownership is enforced server-side
-Errors like `"Process not found or not owned by caller"` mean wrong `caseId` or wrong token. No workarounds — ask user to verify with `list_test_cases`.
+### Project access is enforced server-side
+You only see and act on projects you're a member of. Errors like `"Project not accessible"` or `"Test case (process) not accessible"` mean the `projectId`/`caseId` isn't reachable with your token. No workarounds — ask user to verify with `list_projects` → `list_test_cases({ projectId })`.
 
 ## Common errors
 
 | Error | Cause | Action |
 |---|---|---|
 | `401 Invalid API token` | Token invalid/revoked | Ask user to regenerate in TESSA → Settings → API Tokens |
-| `Invalid caseId` | Non-numeric or missing process | Call `list_test_cases` |
+| `Authentication required` | Call arrived without an authenticated user | Ensure the API token is sent as `Authorization: Bearer qai_...` |
+| `Project not found` | `projectId` doesn't exist | Call `list_projects` for valid IDs |
+| `Project not accessible` | Not a member of that project (or other company) | Use only `projectId`s from `list_projects` |
+| `Invalid caseId` | Non-numeric or missing process | Call `list_test_cases({ projectId })` |
 | `Invalid content type` | Screenshot not png/jpeg/webp | Convert to PNG |
-| `Process not found or not owned by caller` | IDOR blocked by server | Verify `caseId` with `list_test_cases` |
+| `Test case (process) not found` / `not accessible` | Case missing or in a project you can't see | Verify `caseId` with `list_test_cases({ projectId })` |
 
 ## Example conversation
 

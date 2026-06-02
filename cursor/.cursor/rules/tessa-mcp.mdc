@@ -1,5 +1,5 @@
 ---
-description: TESSA MCP orchestration — how to correctly use the 5 tools exposed by the TESSA MCP server (https://agent.qualis-lab.com/mcp) to list, fetch, execute, upload screenshots, and report test case results.
+description: TESSA MCP orchestration — how to correctly use the 6 tools exposed by the TESSA MCP server (https://agent.qualis-lab.com/mcp) to list projects, list test cases, fetch, execute, upload screenshots, and report test case results.
 alwaysApply: false
 globs:
   - "**/*.test.*"
@@ -37,10 +37,13 @@ Expected config:
 }
 ```
 
-## Tools (5)
+## Tools (6)
 
-### `list_test_cases({ page, pageSize })`
-Paginated list. Returns `{ projects: [{id,name}], pagination }`. Use when user didn't specify a `caseId`.
+### `list_projects({ page, pageSize })`
+Paginated list of the projects the user can access. Returns `{ projects: [{id,name}], pagination }`. Use FIRST to pick a project.
+
+### `list_test_cases({ projectId, page, pageSize })`
+Paginated list of the test cases in a project. **Requires `projectId`** (from `list_projects`). Returns `{ projectId, projectName, cases: [{caseId,title,status}], pagination }`. Use when user didn't specify a `caseId`.
 
 ### `fetch_test_case({ caseId })`
 Happy path detail. Returns `{ testCaseId, title, steps: [{stepNumber, action}] }`. Steps are natural language — translate to browser actions.
@@ -64,7 +67,7 @@ Final report.
 ## Correct workflow
 
 ```
-1. If no caseId → list_test_cases → ask user which one.
+1. If no caseId → list_projects → pick project → list_test_cases({ projectId }) → ask user which one.
 2. fetch_test_case.
 3. (Optional) fetch_additional_cases.
 4. **ASK FOR CONFIRMATION** with target URL + side-effect summary.
@@ -83,7 +86,7 @@ Final report.
 - **Never run without explicit user confirmation** — tests can hit real systems (payments, account creation). Ask with target URL + side-effects.
 - **Never assume URLs** like `https://example.com`. If missing, ask user.
 - **Screenshots via presigned PUT, not base64**. Enforced by server schema but also a performance/DB concern.
-- **Ownership is server-enforced**. Don't try to access other users' `caseId`s.
+- **Project access is server-enforced. You only see/act on projects you're a member of.** Don't try to access projects or `caseId`s you can't reach.
 - **Never log real passwords** in `errorMessage`. Redact as `pass=***`.
 - **Max ~100 steps per execution**. Don't parallelize wildly — no rate limiting yet.
 
@@ -91,10 +94,12 @@ Final report.
 
 | Error | Fix |
 |---|---|
-| `401 Invalid API token` | User regenerates token in TESSA settings |
-| `Invalid caseId` | Call `list_test_cases` |
+| `401 Invalid API token` / `Authentication required` | User regenerates token in TESSA settings |
+| `Invalid caseId` | Call `list_test_cases({ projectId })` |
 | `Invalid content type` | Convert screenshot to PNG |
-| `Process not found or not owned by caller` | Verify `caseId` with `list_test_cases` |
+| `Project not found` | Use `list_projects` to find valid project IDs |
+| `Project not accessible` | You're not a member of that project — pick one from `list_projects` |
+| `Test case (process) not found` / `not accessible` | Verify `caseId` with `list_test_cases({ projectId })` |
 
 ## Conversational patterns
 
@@ -106,7 +111,7 @@ Final report.
 4. Summary with global status and screenshot links.
 
 **User**: "¿Qué tests tengo?"
-**You**: `list_test_cases` → formatted list → "¿Cuál querés correr?"
+**You**: `list_projects` → elegir proyecto → `list_test_cases({ projectId })` → formatted list → "¿Cuál querés correr?"
 
 **User**: "Ejecutá todos los casos del 375"
 **You**:

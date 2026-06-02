@@ -7,7 +7,7 @@
 Usala cuando el usuario pida cualquiera de estas cosas:
 
 - "Ejecutá el test case N" / "Corré el caso de prueba N en [URL]"
-- "Listá mis proyectos / test cases de TESSA"
+- "Listá mis proyectos de TESSA" / "¿Qué casos tiene el proyecto X?"
 - "¿Qué pasos tiene el caso N?"
 - "Probá el happy path de [proyecto] en staging"
 - "Subí estos screenshots al proceso N" / "Reportá los resultados"
@@ -17,13 +17,13 @@ Usala cuando el usuario pida cualquiera de estas cosas:
 
 - **URL de producción**: `https://agent.qualis-lab.com/mcp`
 - **Autenticación**: Bearer token con prefijo `qai_` (API token de TESSA).
-- Los 5 tools se descubren automáticamente vía `tools/list` al conectarse.
+- Los 6 tools se descubren automáticamente vía `tools/list` al conectarse.
 
-## Los 5 tools
+## Los 6 tools
 
-### 1. `list_test_cases`
+### 1. `list_projects`
 
-Lista paginada de test cases (llamados internamente "processes") del usuario autenticado.
+Lista paginada de los **proyectos** a los que el usuario autenticado tiene acceso (id + nombre real del proyecto). El acceso se resuelve server-side: solo ves proyectos de tu empresa donde sos miembro.
 
 **Input**:
 ```json
@@ -34,8 +34,36 @@ Lista paginada de test cases (llamados internamente "processes") del usuario aut
 ```json
 {
   "projects": [
-    { "id": 375, "name": "Test QR Payment Flow with Predefined Amount" },
-    { "id": 374, "name": "..." }
+    { "id": 12, "name": "Checkout Web" },
+    { "id": 9, "name": "App Móvil - Pagos" }
+  ],
+  "pagination": {
+    "currentPage": 1, "pageSize": 10,
+    "totalItems": 4, "totalPages": 1,
+    "hasNextPage": false, "hasPreviousPage": false
+  }
+}
+```
+
+**Usalo primero** cuando el usuario no especifica un `caseId` concreto. Identificá el proyecto y luego listá sus casos con `list_test_cases`.
+
+### 2. `list_test_cases`
+
+Lista paginada de los **casos de prueba** (internamente "processes") de un proyecto al que el usuario tiene acceso. Requiere el `projectId` obtenido de `list_projects`. Devuelve el nombre del proyecto y los casos en estado `PROCESADO` (listos para ejecutar).
+
+**Input**:
+```json
+{ "projectId": 12, "page": 1, "pageSize": 10 }
+```
+
+**Output**:
+```json
+{
+  "projectId": 12,
+  "projectName": "Checkout Web",
+  "cases": [
+    { "caseId": 375, "title": "Test QR Payment Flow with Predefined Amount", "status": "PROCESADO" },
+    { "caseId": 374, "title": "Checkout con cupón de descuento", "status": "PROCESADO" }
   ],
   "pagination": {
     "currentPage": 1, "pageSize": 10,
@@ -45,9 +73,9 @@ Lista paginada de test cases (llamados internamente "processes") del usuario aut
 }
 ```
 
-**Usalo primero** cuando el usuario no especifica un `caseId` concreto. Mostrale la lista y pediel confirmación.
+El `caseId` de cada caso es el ID que usan `fetch_test_case`, `fetch_additional_cases`, `get_presigned_url` y `submit_test_result`. Mostrale la lista al usuario y pedí confirmación antes de ejecutar.
 
-### 2. `fetch_test_case`
+### 3. `fetch_test_case`
 
 Detalle del happy path de un test case.
 
@@ -70,7 +98,7 @@ Detalle del happy path de un test case.
 
 Los `steps` son **descripciones en lenguaje natural**. Vos (la IA) sos la responsable de traducirlas en acciones concretas del browser (click, type, wait, screenshot).
 
-### 3. `fetch_additional_cases`
+### 4. `fetch_additional_cases`
 
 Casos alternativos asociados (edge cases, flujos de error, validaciones extra).
 
@@ -103,7 +131,7 @@ Casos alternativos asociados (edge cases, flujos de error, validaciones extra).
 
 Llamalo **después de `fetch_test_case`** si el usuario pidió explícitamente "ejecutá todos los casos" o si el happy path falló y hay que probar el camino negativo.
 
-### 4. `get_presigned_url`
+### 5. `get_presigned_url`
 
 Genera una URL firmada para subir un screenshot directamente a S3. **Úsalo SIEMPRE antes de subir screenshots** — no envíes imágenes en base64 inline.
 
@@ -129,7 +157,7 @@ Genera una URL firmada para subir un screenshot directamente a S3. **Úsalo SIEM
 - Hacé un `PUT` HTTP al `uploadUrl` con el binario crudo del screenshot (no form-data) y el header `Content-Type` correcto.
 - Guardá el `publicUrl` para pasarlo después a `submit_test_result`.
 
-### 5. `submit_test_result`
+### 6. `submit_test_result`
 
 Reporta el resultado final de la ejecución.
 
@@ -170,7 +198,8 @@ Reglas:
 ## Flujo recomendado (end-to-end)
 
 ```
-1. (Si no hay caseId)  → list_test_cases
+1. (Si no hay caseId)  → list_projects               (proyectos accesibles)
+                        → list_test_cases(projectId)  (casos del proyecto elegido)
                         → mostrar al usuario y pedir confirmación
 
 2. fetch_test_case     → obtener pasos del happy path
@@ -229,23 +258,25 @@ Si un step falla:
 
 Cada llamada a `submit_test_result` **crea una nueva ejecución**. No hay deduplicación. Si el usuario te pide "volvé a correr el test", eso es una ejecución nueva y correcta. Pero si tu código falla a medio camino, **no reenvíes** el resultado completo duplicando steps.
 
-### Pattern 6 — Ownership
+### Pattern 6 — Acceso por proyecto
 
-Los tools validan en el servidor que el `caseId` pertenezca al dueño del API token. Si recibís un error tipo `"Process not found or not owned by caller"`, es que:
-- El `caseId` está mal.
-- O el token pertenece a otro usuario.
+Los tools validan en el servidor que el recurso pertenezca a un **proyecto al que el usuario del API token tiene acceso** (membresía + misma empresa). Si recibís:
+- `"Project not accessible"` → el `projectId` existe pero no sos miembro de ese proyecto (o es de otra empresa).
+- `"Test case (process) not found"` / `"... not accessible"` → el `caseId` está mal, o pertenece a un proyecto que no podés ver.
 
-No intentes workarounds. Pedile al usuario que verifique el `caseId` con `list_test_cases`.
+No intentes workarounds. Pedile al usuario que verifique con `list_projects` → `list_test_cases(projectId)` qué proyectos y casos tiene disponibles.
 
 ## Errores comunes y cómo responderlos
 
 | Error | Causa | Qué hacer |
 |---|---|---|
 | `401 Invalid API token` | Token inválido o revocado | Pedir al usuario que regenere el token en TESSA → Configuración → API Tokens |
-| `Invalid caseId` | `caseId` no numérico o proceso inexistente | Llamar `list_test_cases` para encontrar IDs válidos |
+| `Authentication required` | La llamada llegó sin usuario autenticado | Verificar que el API token se envía en el header `Authorization: Bearer qai_...` |
+| `Project not found` | El `projectId` no existe | Llamar `list_projects` para encontrar IDs válidos |
+| `Project not accessible` | No sos miembro de ese proyecto (o es de otra empresa) | Usar solo `projectId` que aparezcan en `list_projects` |
+| `Invalid caseId` | `caseId` no numérico o proceso inexistente | Llamar `list_test_cases(projectId)` para encontrar IDs válidos |
 | `Invalid content type` | Screenshot no es png/jpeg/webp | Convertir el screenshot a PNG antes de pedir presigned URL |
-| `Process not found or not owned by caller` | IDOR: estás tratando de tocar un proceso de otro user | Verificar `caseId` con `list_test_cases` del token actual |
-| `caseId not found or not owned by caller` (en `get_presigned_url`) | Mismo que el anterior pero para presigned | Mismo fix |
+| `Test case (process) not found` / `not accessible` | El caso no existe o pertenece a un proyecto que no podés ver | Verificar el `caseId` con `list_test_cases(projectId)` del token actual |
 
 ## Ejemplos de conversación
 
@@ -266,8 +297,10 @@ No intentes workarounds. Pedile al usuario que verifique el `caseId` con `list_t
 > **Usuario**: ¿Qué tests tengo en TESSA?
 >
 > **IA**:
-> 1. `list_test_cases({ page: 1, pageSize: 10 })`.
-> 2. Responde con la lista formateada. Pregunta cuál querés correr.
+> 1. `list_projects({ page: 1, pageSize: 10 })` → muestra los proyectos accesibles.
+> 2. Usuario elige "Checkout Web" (`id: 12`).
+> 3. `list_test_cases({ projectId: 12 })` → casos del proyecto.
+> 4. Responde con la lista formateada. Pregunta cuál querés correr.
 
 ### Ejemplo 3 — Happy path + alternativos
 
@@ -304,4 +337,4 @@ No intentes workarounds. Pedile al usuario que verifique el `caseId` con `list_t
 
 ---
 
-*Skill v1.0 — mantener alineada con el schema real de los tools en `backend/src/features/mcp/provider/mcp-tools.provider.ts`.*
+*Skill v1.1 — mantener alineada con el schema real de los tools en `backend/src/features/mcp/provider/mcp-tools.provider.ts`.*

@@ -132,11 +132,12 @@ La respuesta trae un `token` que empieza con `qai_`. **Copialo ahora** — solo 
 
 **GitHub Copilot**: Copilot todavía no soporta MCP nativo en todas las plataformas. Si tu versión lo soporta (Copilot Chat en VS Code con extensión MCP bridge), usá la misma config que Cursor. Si no, la skill igual funciona como instructions — Copilot no va a ejecutar los tools pero va a entender los conceptos y escribir código correcto contra la API REST equivalente (`/api/mcp/*`).
 
-## Los 5 tools expuestos
+## Los 6 tools expuestos
 
 | Tool | Propósito |
 |---|---|
-| `list_test_cases` | Lista paginada de tus test cases (processId + nombre) |
+| `list_projects` | Lista paginada de los proyectos accesibles del usuario (id + nombre) |
+| `list_test_cases` | Lista paginada de los casos de un proyecto (requiere `projectId`) |
 | `fetch_test_case` | Detalle de un test case con sus pasos (happy path) |
 | `fetch_additional_cases` | Casos alternativos asociados a un test case |
 | `get_presigned_url` | Genera URL firmada para subir un screenshot a S3 |
