@@ -17,9 +17,9 @@ Usala cuando el usuario pida cualquiera de estas cosas:
 
 - **URL de producción**: `https://agent.qualis-lab.com/mcp`
 - **Autenticación**: Bearer token con prefijo `qai_` (API token de TESSA).
-- Los 6 tools se descubren automáticamente vía `tools/list` al conectarse.
+- Los 8 tools se descubren automáticamente vía `tools/list` al conectarse.
 
-## Los 6 tools
+## Los 8 tools
 
 ### 1. `list_projects`
 
@@ -195,6 +195,71 @@ Reglas:
 - `errorMessage` solo en steps con status distinto de `PASS`.
 - Solo podés reportar sobre procesos de los que sos dueño (validación server-side).
 
+### 7. `create_analysis_draft`
+
+**Paso 1 de la generación de casos a partir de un documento funcional.** Crea un proceso en estado `DRAFT` y devuelve una URL firmada de S3 (`PUT`) para subir el documento. (Tool **solo MCP**: no tiene equivalente REST.)
+
+**Input**:
+```json
+{
+  "projectId": 12,
+  "fileName": "spec-checkout.pdf",
+  "contentType": "application/pdf"
+}
+```
+
+**Output**:
+```json
+{
+  "processId": 481,
+  "uploadUrl": "https://bucket.s3.amazonaws.com/processes/481/uuid_spec-checkout.pdf?X-Amz-Algorithm=...",
+  "publicUrl": "https://bucket.s3.amazonaws.com/processes/481/uuid_spec-checkout.pdf"
+}
+```
+
+- `fileName`: máximo 255 caracteres.
+- `contentType` debe ser **uno de**: `application/pdf` o `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx). Cualquier otro es rechazado.
+- Después de llamarlo, hacé un `PUT` HTTP del documento al `uploadUrl` con el header `Content-Type` que coincida con el `contentType` enviado.
+- **Gotcha**: la URL está firmada con solo los headers `host;content-type`. **No envíes ningún header `x-amz-checksum-*`** (aunque aparezca en el query string) o S3 devuelve `403`.
+- Valida acceso al proyecto + permiso `CREATE_EXECUTIONS` del lado del servidor.
+- Guardá el `publicUrl` para pasarlo a `generate_analysis` en el paso 2.
+
+### 8. `generate_analysis`
+
+**Paso 2** (después de `create_analysis_draft` + subir el archivo). Genera casos de prueba de forma **asíncrona** a partir del documento subido. (Tool **solo MCP**: no tiene equivalente REST.)
+
+**Input**:
+```json
+{
+  "processId": 481,
+  "fileUrl": "https://bucket.s3.amazonaws.com/processes/481/uuid_spec-checkout.pdf",
+  "documentType": "pdf",
+  "originalName": "spec-checkout.pdf",
+  "prompt": "Enfocate en los flujos de pago con tarjeta",
+  "industry": "Fintech",
+  "functionality": "Checkout",
+  "platform": "Web",
+  "additionals": true,
+  "gherkin": false,
+  "uxUi": false
+}
+```
+
+**Output**:
+```json
+{
+  "processId": 481,
+  "message": "Generation started"
+}
+```
+
+- `fileUrl`: máximo 2000 caracteres. **Debe ser el `publicUrl`** devuelto por `create_analysis_draft` y apuntar a la carpeta de este mismo proceso (validación anti-SSRF del lado del servidor).
+- `documentType` debe ser `pdf` o `word`.
+- `originalName` (opcional), `prompt` (opcional, máximo 5000 caracteres), `industry`, `functionality`, `platform` (todos opcionales).
+- `additionals`, `gherkin`, `uxUi` (opcionales, default `false`): flags que controlan qué tipos de casos se generan además del happy path.
+- El proceso debe estar en estado `DRAFT` y pertenecerte (validación server-side). Usa el proveedor LLM activo de la empresa.
+- La generación es **asíncrona**: el output solo confirma que arrancó. **Poleá después** (ej. con `list_test_cases`) hasta que el caso esté en estado `PROCESADO`.
+
 ## Flujo recomendado (end-to-end)
 
 ```
@@ -221,6 +286,25 @@ Reglas:
 
 6. submit_test_result con el array completo de steps
 7. Resumir al usuario: status global, pasos que fallaron, links a screenshots
+```
+
+## Flujo de generación a partir de un documento
+
+Para **generar** casos de prueba (no ejecutarlos) a partir de un PDF o docx funcional:
+
+```
+1. create_analysis_draft({ projectId, fileName, contentType })
+                         → { processId, uploadUrl, publicUrl }
+
+2. PUT HTTP del PDF/docx al uploadUrl
+   - Solo header Content-Type (igual al contentType enviado)
+   - NO mandes headers x-amz-checksum-*  (si no, S3 devuelve 403)
+
+3. generate_analysis({ processId, fileUrl: publicUrl, documentType, ...flags })
+                         → { processId, message }   (generación ASÍNCRONA)
+
+4. Poleá list_test_cases hasta que el caso esté en status PROCESADO,
+   luego fetch_test_case para obtener los pasos.
 ```
 
 ## Patrones anti-fallo

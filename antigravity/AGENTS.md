@@ -16,9 +16,10 @@ Activate this workflow when the user:
 - Asks to list TESSA test cases / projects.
 - Asks for steps of a specific test case.
 - Wants to report results or upload screenshots.
+- Wants to generate test cases from a functional document (PDF/Word).
 - Mentions TESSA, QualisLab, or automated testing.
 
-## The 6 tools
+## The 8 tools
 
 ### `list_projects({ page, pageSize })`
 Paginated list of the projects the user can access (id + name).
@@ -53,6 +54,22 @@ Final execution report.
 - `screenshotUrl` must be a `publicUrl` from `get_presigned_url`. **No base64.**
 - Global status rule: worst wins (FAIL > ERROR > SKIPPED > PASS).
 
+### `create_analysis_draft({ projectId, fileName, contentType })`
+Step 1 of generating test cases from a functional document. Creates a `DRAFT` process and returns a presigned S3 **PUT** URL to upload the document.
+- `projectId` (number), `fileName` (string, ≤255), `contentType` (string).
+- Allowed `contentType`: `application/pdf` or `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx) **only**.
+- Returns `{ processId, uploadUrl, publicUrl }`.
+- Then HTTP **PUT** the document binary to `uploadUrl` with the matching `Content-Type`.
+- **Gotcha:** the URL is signed with only `host;content-type` headers — do NOT add any `x-amz-checksum-*` header (even though it appears in the query string) or S3 returns `403`.
+- Validates project access + `CREATE_EXECUTIONS` permission server-side.
+
+### `generate_analysis({ processId, fileUrl, documentType, originalName?, prompt?, industry?, functionality?, platform?, additionals?, gherkin?, uxUi? })`
+Step 2 (after `create_analysis_draft` + uploading the file). Generates test cases **asynchronously** from the uploaded document.
+- `processId` (number), `fileUrl` (string, ≤2000), `documentType`: `'pdf' | 'word'`.
+- Optional: `originalName`, `prompt` (≤5000), `industry`, `functionality`, `platform`, `additionals` (default `false`), `gherkin` (default `false`), `uxUi` (default `false`).
+- Returns `{ processId, message }` — **ASYNC**; poll afterwards (e.g. `list_test_cases`) until the case is `PROCESADO`.
+- `fileUrl` must be the `publicUrl` from step 1 (must point to this process's folder — anti-SSRF). Process must be `DRAFT` and owned by the caller. Uses the company's active LLM provider.
+
 ## End-to-end workflow
 
 ```
@@ -68,6 +85,15 @@ Final execution report.
    e. Record step status
 6. submit_test_result
 7. Summary to user: global status + failing steps + screenshot URLs
+```
+
+## Doc-based generation workflow (PDF/Word → test cases)
+
+```
+1. create_analysis_draft({ projectId, fileName, contentType }) → { processId, uploadUrl, publicUrl }
+2. HTTP PUT the PDF/docx binary to uploadUrl (set Content-Type only — NO x-amz-checksum-* header)
+3. generate_analysis({ processId, fileUrl: publicUrl, documentType, ...flags }) → { processId, message }
+4. Poll list_test_cases until the case is PROCESADO, then fetch_test_case for the steps
 ```
 
 ## Hard rules
@@ -126,5 +152,7 @@ Final execution report.
 | `fetch_additional_cases` | `GET /api/mcp/test-case/:caseId/additional-cases` |
 | `get_presigned_url` | `GET /api/mcp/presigned-url?fileName=...&contentType=...&caseId=...` |
 | `submit_test_result` | `POST /api/mcp/test-result` |
+
+`create_analysis_draft` and `generate_analysis` are **MCP-only** — they have no REST equivalent.
 
 Always with `Authorization: Bearer qai_<token>`.

@@ -1,6 +1,6 @@
 ---
 name: tessa-mcp
-description: Use when the user asks to run, list, inspect, or report test cases via the TESSA MCP server (at https://agent.qualis-lab.com/mcp). Orchestrates the 6 tools (list_projects, list_test_cases, fetch_test_case, fetch_additional_cases, get_presigned_url, submit_test_result) in the correct order. Triggers on mentions of TESSA, QualisLab, "test case N", "ejecutá el caso N", "happy path", or similar testing workflows.
+description: Use when the user asks to run, list, inspect, or report test cases via the TESSA MCP server (at https://agent.qualis-lab.com/mcp). Orchestrates the 8 tools (list_projects, list_test_cases, fetch_test_case, fetch_additional_cases, get_presigned_url, submit_test_result, create_analysis_draft, generate_analysis) in the correct order. Triggers on mentions of TESSA, QualisLab, "test case N", "ejecutá el caso N", "happy path", "generá casos desde este documento", "subí este PDF/Word y generá casos", or similar testing workflows.
 ---
 
 # TESSA MCP Skill (Claude Code)
@@ -25,7 +25,7 @@ Any of these user intents:
 - Tools auto-discovered via `tools/list` on connection.
 - Ensure the MCP server is configured in `~/.claude.json` or project `.mcp.json`.
 
-## The 6 tools
+## The 8 tools
 
 ### 1. `list_projects`
 Paginated list of the **projects** the user can access (server-enforced: only projects of their company where they're a member).
@@ -65,6 +65,21 @@ Final execution report.
 - **Global status rule**: if any step isn't PASS, global status can't be PASS (use worst: FAIL > ERROR > SKIPPED > PASS).
 - `screenshotUrl` must come from `get_presigned_url.publicUrl`.
 
+### 7. `create_analysis_draft`
+Step 1 of generating test cases from a functional document. Creates a DRAFT process and returns a presigned S3 PUT URL to upload the document.
+- **Input**: `{ projectId: number, fileName: string (≤255), contentType: string }`
+- **Allowed contentType**: `application/pdf` or `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx) only.
+- **Output**: `{ processId, uploadUrl, publicUrl }`
+- After this, HTTP PUT the document binary to `uploadUrl` with the matching `Content-Type`. **Gotcha**: the URL is signed with only `host;content-type` — do NOT send any `x-amz-checksum-*` header (even though it appears in the query string) or S3 returns 403.
+- Validates project access + the `CREATE_EXECUTIONS` permission server-side.
+
+### 8. `generate_analysis`
+Step 2 (after create_analysis_draft + uploading the file). Generates test cases (asynchronously) from the uploaded document.
+- **Input**: `{ processId: number, fileUrl: string (≤2000), documentType: 'pdf' | 'word', originalName?: string, prompt?: string (≤5000), industry?: string, functionality?: string, platform?: string, additionals?: boolean, gherkin?: boolean, uxUi?: boolean }`
+- `additionals`/`gherkin`/`uxUi` default to **false**. `industry`/`functionality`/`platform` have sensible defaults.
+- **Output**: `{ processId, message }` — generation is **async**. Poll afterwards (e.g. `list_test_cases({ projectId })`) until the new case appears in `PROCESADO`.
+- `fileUrl` must be the exact `publicUrl` from step 1 (it must point to this process's folder — anti-SSRF). Process must be DRAFT and owned by the caller. Uses the company's active LLM provider.
+
 ## Recommended end-to-end flow
 
 ```
@@ -89,6 +104,16 @@ Final execution report.
 
 6. → submit_test_result with full steps array.
 7. Summarize to user: global status, failed steps, screenshot links.
+```
+
+## Document-based generation flow
+
+```
+1. create_analysis_draft({ projectId, fileName, contentType }) → { processId, uploadUrl, publicUrl }
+2. HTTP PUT the PDF/docx binary to uploadUrl (Content-Type only; no checksum header)
+3. generate_analysis({ processId, fileUrl: publicUrl, documentType, ...flags }) → { processId, message }
+4. Poll list_test_cases({ projectId }) until the generated case shows status PROCESADO
+5. fetch_test_case({ caseId }) to read the generated steps
 ```
 
 ## Anti-failure patterns
@@ -129,6 +154,9 @@ You only see and act on projects you're a member of. Errors like `"Project not a
 | `Invalid caseId` | Non-numeric or missing process | Call `list_test_cases({ projectId })` |
 | `Invalid content type` | Screenshot not png/jpeg/webp | Convert to PNG |
 | `Test case (process) not found` / `not accessible` | Case missing or in a project you can't see | Verify `caseId` with `list_test_cases({ projectId })` |
+| `Invalid content type` (on create_analysis_draft) | contentType not pdf/docx | Use application/pdf or the docx MIME |
+| `Process ... is not a draft` | processId already used/generated | Call create_analysis_draft again for a fresh draft |
+| `Invalid file URL: must point to this process folder` | fileUrl doesn't match the process | Pass the exact publicUrl from create_analysis_draft |
 
 ## Example conversation
 

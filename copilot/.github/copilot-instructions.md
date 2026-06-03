@@ -7,7 +7,7 @@ This project integrates with **TESSA** (Test Execution & Smart Synthesis Agent),
 
 > **Note on Copilot MCP support**: if your Copilot version supports MCP natively, the tools will appear automatically. Otherwise, use these instructions to generate correct code against the equivalent REST endpoints (`/api/mcp/*`).
 
-## The 6 TESSA MCP tools
+## The 8 TESSA MCP tools
 
 1. **`list_projects({ page, pageSize })`** — lists the projects the user can access (id + name). Use first. Returns `{ projects: [{id,name}], pagination }`.
 2. **`list_test_cases({ projectId, page, pageSize })`** — lists the test cases in a project. Requires `projectId`. Returns `{ projectId, projectName, cases: [{caseId,title,status}], pagination }`.
@@ -15,6 +15,8 @@ This project integrates with **TESSA** (Test Execution & Smart Synthesis Agent),
 4. **`fetch_additional_cases({ caseId })`** — returns edge-case scenarios.
 5. **`get_presigned_url({ fileName, contentType, caseId? })`** — returns `{ uploadUrl, publicUrl }` for S3 screenshot upload.
 6. **`submit_test_result({ caseId, status, executedUrl, totalDurationMs?, steps })`** — reports execution outcome.
+7. **`create_analysis_draft({ projectId, fileName, contentType })`** — Step 1 of generating test cases from a functional document. Creates a `DRAFT` process and returns a presigned S3 PUT URL to upload the document. `fileName` ≤255 chars; `contentType` must be `application/pdf` or `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx) **only**. Returns `{ processId, uploadUrl, publicUrl }`. Then HTTP PUT the document binary to `uploadUrl` with the matching `Content-Type`. **Gotcha**: the URL is signed with only `host;content-type` headers — do NOT add any `x-amz-checksum-*` header (even though it appears in the query string) or S3 returns 403. Validates project access + `CREATE_EXECUTIONS` server-side.
+8. **`generate_analysis({ processId, fileUrl, documentType, originalName?, prompt?, industry?, functionality?, platform?, additionals?, gherkin?, uxUi? })`** — Step 2 (after `create_analysis_draft` + uploading the file). Generates test cases **asynchronously** from the uploaded document. `fileUrl` ≤2000 chars and must be the `publicUrl` from step 1 (must point to this process's folder — anti-SSRF); `documentType` is `'pdf' | 'word'`; `prompt` ≤5000 chars; `additionals`/`gherkin`/`uxUi` are booleans (default `false`). Returns `{ processId, message }` — poll afterwards (e.g. `list_test_cases`) until the case is `PROCESADO`. Process must be `DRAFT` and owned by the caller; uses the company's active LLM provider.
 
 ## Correct workflow
 
@@ -24,6 +26,15 @@ This project integrates with **TESSA** (Test Execution & Smart Synthesis Agent),
 4. **Ask user for confirmation** with target URL + side-effects before executing.
 5. For each step: execute browser action → screenshot → `get_presigned_url` → PUT binary to `uploadUrl` → save `publicUrl`.
 6. `submit_test_result` with all steps and their `screenshotUrl` = `publicUrl`.
+
+## Document-based generation flow (create_analysis_draft + generate_analysis)
+
+To generate test cases from a functional document (PDF/docx):
+
+1. `create_analysis_draft({ projectId, fileName, contentType })` → `{ processId, uploadUrl, publicUrl }`.
+2. PUT the PDF/docx binary to `uploadUrl` with the matching `Content-Type` only — **no `x-amz-checksum-*` header** (or S3 returns 403).
+3. `generate_analysis({ processId, fileUrl: publicUrl, documentType, ...flags })` → `{ processId, message }` (async).
+4. Poll `list_test_cases` until the case is `PROCESADO`, then `fetch_test_case`.
 
 ## Critical rules
 
@@ -78,6 +89,8 @@ When generating code that calls TESSA:
 | `fetch_additional_cases` | `GET /api/mcp/test-case/:caseId/additional-cases` |
 | `get_presigned_url` | `GET /api/mcp/presigned-url?fileName=...&contentType=...&caseId=...` |
 | `submit_test_result` | `POST /api/mcp/test-result` with body |
+
+> `create_analysis_draft` and `generate_analysis` are **MCP-only** — they have no REST equivalent.
 
 All endpoints require `Authorization: Bearer qai_<token>` header.
 

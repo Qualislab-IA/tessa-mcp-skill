@@ -2,7 +2,7 @@
 
 Guía para que asistentes de IA en distintos IDEs usen correctamente el **servidor MCP de TESSA** (Test Execution & Smart Synthesis Agent).
 
-TESSA expone 5 herramientas MCP para descubrir test cases, ejecutarlos en un navegador, subir screenshots y reportar resultados. Esta skill le enseña a la IA el **flujo correcto** y los **patrones anti-fallo**.
+TESSA expone 8 herramientas MCP para descubrir test cases, ejecutarlos en un navegador, subir screenshots, reportar resultados y generar análisis a partir de documentos. Esta skill le enseña a la IA el **flujo correcto** y los **patrones anti-fallo**.
 
 ## ¿Qué es esto?
 
@@ -132,7 +132,7 @@ La respuesta trae un `token` que empieza con `qai_`. **Copialo ahora** — solo 
 
 **GitHub Copilot**: Copilot todavía no soporta MCP nativo en todas las plataformas. Si tu versión lo soporta (Copilot Chat en VS Code con extensión MCP bridge), usá la misma config que Cursor. Si no, la skill igual funciona como instructions — Copilot no va a ejecutar los tools pero va a entender los conceptos y escribir código correcto contra la API REST equivalente (`/api/mcp/*`).
 
-## Los 6 tools expuestos
+## Los 8 tools expuestos
 
 | Tool | Propósito |
 |---|---|
@@ -142,6 +142,8 @@ La respuesta trae un `token` que empieza con `qai_`. **Copialo ahora** — solo 
 | `fetch_additional_cases` | Casos alternativos asociados a un test case |
 | `get_presigned_url` | Genera URL firmada para subir un screenshot a S3 |
 | `submit_test_result` | Reporta el resultado de una ejecución + steps + screenshots |
+| `create_analysis_draft` | Paso 1 de la generación a partir de docs: crea un proceso DRAFT y devuelve un presigned PUT URL para subir un documento funcional (PDF/Word) |
+| `generate_analysis` | Paso 2: genera test cases (de forma asíncrona) a partir del documento subido |
 
 Detalles completos en `SKILL.md` (fuente canónica).
 
