@@ -1,5 +1,5 @@
 ---
-description: TESSA MCP orchestration — how to correctly use the 8 tools exposed by the TESSA MCP server (https://agent.qualis-lab.com/mcp) to list projects, list test cases, fetch, execute, upload screenshots, report test case results, and generate test cases from a functional document.
+description: TESSA MCP orchestration — how to correctly use the 6 tools exposed by the TESSA MCP server (https://agent.qualis-lab.com/mcp) to list projects, list test cases, fetch, execute, upload screenshots, report test case results, and generate test cases from a functional document.
 alwaysApply: false
 globs:
   - "**/*.test.*"
@@ -37,19 +37,20 @@ Expected config:
 }
 ```
 
-## Tools (8)
+## Tools (6)
 
 ### `list_projects({ page, pageSize })`
 Paginated list of the projects the user can access. Returns `{ projects: [{id,name}], pagination }`. Use FIRST to pick a project.
 
 ### `list_test_cases({ projectId, page, pageSize })`
-Paginated list of the test cases in a project. **Requires `projectId`** (from `list_projects`). Returns `{ projectId, projectName, cases: [{caseId,title,status}], pagination }`. Use when user didn't specify a `caseId`.
+Paginated list of the test cases in a project. **Requires `projectId`** (from `list_projects`). Returns `{ projectId, projectName, cases: [{caseId,title,status}], pagination }`. Returns cases in **all states** (`DRAFT`, `INICIADO`, `AWAITING_APPROVAL`, `PROCESADO`, `ERROR`), each with its own `status` — only `PROCESADO` ones are ready to execute; the rest show how each generation ended. Use when user didn't specify a `caseId`, and to poll a just-triggered `generate_analysis` until the case turns `PROCESADO`.
 
-### `fetch_test_case({ caseId })`
-Happy path detail. Returns `{ testCaseId, title, steps: [{stepNumber, action}] }`. Steps are natural language — translate to browser actions.
-
-### `fetch_additional_cases({ caseId })`
-Edge/error scenarios. Returns `{ testCaseId, totalAdditionalCases, additionalCases: [...] }`. Call only if user asked "all cases" or happy path failed.
+### `fetch_cases({ processId, includeHappyPath?, includeAdditionals?, includeGherkin?, includeUxUi? })`
+Fetches a process's generated cases (happy path, additional cases, Gherkin scenarios, UX/UI analysis) in **a single call**. Replaces the old `fetch_test_case` / `fetch_additional_cases`.
+- Only `processId` is required. `includeHappyPath` / `includeAdditionals` default `true`; `includeGherkin` / `includeUxUi` default `false`.
+- Returns `{ processId, happyPath, additionals, totalAdditionalCases }`; adds `gherkin` when `includeGherkin: true` and `uxUi` when `includeUxUi: true` (`null` if the process has no UX/UI analysis). Fields whose flag is `false` are omitted.
+- `happyPath.steps` are **natural language** — translate to concrete browser actions.
+- For only the happy path: `fetch_cases({ processId, includeAdditionals: false })`. For "all cases": keep defaults (happy + additionals).
 
 ### `get_presigned_url({ fileName, contentType, caseId? })`
 Pre-signed S3 URL for uploading screenshots. **Always use this, never base64 inline.**
@@ -64,50 +65,43 @@ Final report.
 - `screenshotUrl` must come from `get_presigned_url.publicUrl`.
 - **Global status rule**: if any step isn't PASS, global can't be PASS (worst wins: FAIL > ERROR > SKIPPED > PASS).
 
-### `create_analysis_draft({ projectId, fileName, contentType })`
-**Step 1** of generating test cases from a functional document. Creates a `DRAFT` process and returns a pre-signed S3 **PUT** URL to upload the document.
-- `projectId`: number. `fileName`: string ≤255. `contentType`: string.
-- `contentType` allowed: `application/pdf` **or** `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx) **only**.
-- Returns `{ processId, uploadUrl, publicUrl }`.
-- Then HTTP **PUT** the document binary to `uploadUrl` with the matching `Content-Type`.
-- **Gotcha**: the URL is signed with only `host;content-type` headers — do **NOT** add any `x-amz-checksum-*` header (even though it appears in the query string) or S3 returns 403.
-- Validates project access + `CREATE_EXECUTIONS` permission server-side.
+### `generate_analysis({ projectId, documentText, prompt?, industry?, functionality?, platform?, additionals?, gherkin?, uxUi? })`
+Generates test cases **asynchronously** from a functional document's **plain text**, in **a single call** — creates the process and triggers generation. No file upload (no base64, no presigned URLs).
+- `projectId` and `documentText` are **required**. `documentText`: plain text of the document (max 2 MB). If you have a PDF/docx, extract its text and pass it here.
+- `prompt?`: string ≤5000. `industry?` / `functionality?` / `platform?`: optional, sensible server-side defaults.
+- `additionals?` / `gherkin?` / `uxUi?`: boolean (default `false`) — control which case types are generated beyond the happy path.
+- Returns `{ processId, message }` — **ASYNC**; poll afterwards with `list_test_cases` until the case is `PROCESADO` (or `ERROR`).
+- Validates project access + `CREATE_EXECUTIONS` permission server-side. Uses the company's active LLM provider.
 
-### `generate_analysis({ processId, fileUrl, documentType, originalName?, prompt?, industry?, functionality?, platform?, additionals?, gherkin?, uxUi? })`
-**Step 2** (after `create_analysis_draft` + uploading the file). Generates test cases **asynchronously** from the uploaded document.
-- `processId`: number. `fileUrl`: string ≤2000 — must be the `publicUrl` from step 1 (must point to this process's folder — anti-SSRF).
-- `documentType`: `pdf | word`. `originalName?`: string. `prompt?`: string ≤5000. `industry?` / `functionality?` / `platform?`: string.
-- `additionals?` / `gherkin?` / `uxUi?`: boolean (default `false`).
-- Returns `{ processId, message }` — **ASYNC**; poll afterwards (e.g. `list_test_cases`) until the case is `PROCESADO`.
-- Process must be `DRAFT` and owned by the caller. Uses the company's active LLM provider.
-
-> Note: `create_analysis_draft` and `generate_analysis` are **MCP-only** — there is no REST equivalent for these two.
+> Note: `generate_analysis` is **MCP-only** — there is no REST equivalent.
 
 ## Correct workflow
 
 ```
 1. If no caseId → list_projects → pick project → list_test_cases({ projectId }) → ask user which one.
-2. fetch_test_case.
-3. (Optional) fetch_additional_cases.
-4. **ASK FOR CONFIRMATION** with target URL + side-effect summary.
-5. For each step:
+2. fetch_cases({ processId }) → happy path + additional cases (default).
+   (For only the happy path: fetch_cases({ processId, includeAdditionals: false }).)
+3. **ASK FOR CONFIRMATION** with target URL + side-effect summary.
+4. For each step:
    a. Translate step.action to browser actions.
    b. Execute, measure durationMs.
    c. Screenshot.
    d. get_presigned_url → PUT binary → save publicUrl.
    e. Record step result.
-6. submit_test_result with full steps.
-7. Summarize: global status, failures, screenshot links.
+5. submit_test_result with full steps.
+6. Summarize: global status, failures, screenshot links.
 ```
 
 ### Generate test cases from a functional document
 
 ```
-1. create_analysis_draft({ projectId, fileName, contentType }) → { processId, uploadUrl, publicUrl }.
-2. HTTP PUT the PDF/docx binary to uploadUrl (set Content-Type only — NO x-amz-checksum-* header).
-3. generate_analysis({ processId, fileUrl: publicUrl, documentType, ...flags }) → { processId, message }.
-4. Poll list_test_cases until the case is PROCESADO, then fetch_test_case for the detail.
+1. If you have a PDF/docx, extract its content as plain text.
+2. generate_analysis({ projectId, documentText, prompt?, ...flags }) → { processId, message } (ASYNC).
+3. Poll list_test_cases and watch the case status until PROCESADO (or ERROR),
+   then fetch_cases({ processId }) for the detail.
 ```
+
+The document travels as **plain text** in `documentText` — there is no S3 upload step.
 
 ## Critical rules
 
@@ -133,7 +127,7 @@ Final report.
 
 **User**: "Ejecutá el 375 en staging.example.com"
 **You**:
-1. `fetch_test_case({ caseId: "375" })`
+1. `fetch_cases({ processId: 375, includeAdditionals: false })`
 2. "Voy a ejecutar 'Test QR Payment' (5 pasos) en staging.example.com. Incluye pago simulado de $500. ¿Confirmás?"
 3. (on confirm) execute loop → `submit_test_result`.
 4. Summary with global status and screenshot links.
@@ -143,7 +137,7 @@ Final report.
 
 **User**: "Ejecutá todos los casos del 375"
 **You**:
-1. `fetch_test_case` + `fetch_additional_cases`.
+1. `fetch_cases({ processId: 375 })` (default brings happy path + additionals).
 2. Confirm: "1 happy path + 4 alternativos = 5 ejecuciones. ¿OK?"
 3. Execute each as separate `submit_test_result`.
 4. Summary: "5/5 ejecutados. 3 PASS, 1 FAIL, 1 ERROR."

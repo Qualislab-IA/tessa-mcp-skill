@@ -17,9 +17,9 @@ Usala cuando el usuario pida cualquiera de estas cosas:
 
 - **URL de producción**: `https://agent.qualis-lab.com/mcp`
 - **Autenticación**: Bearer token con prefijo `qai_` (API token de TESSA).
-- Los 8 tools se descubren automáticamente vía `tools/list` al conectarse.
+- Los 6 tools se descubren automáticamente vía `tools/list` al conectarse.
 
-## Los 8 tools
+## Los 6 tools
 
 ### 1. `list_projects`
 
@@ -49,7 +49,7 @@ Lista paginada de los **proyectos** a los que el usuario autenticado tiene acces
 
 ### 2. `list_test_cases`
 
-Lista paginada de los **casos de prueba** (internamente "processes") de un proyecto al que el usuario tiene acceso. Requiere el `projectId` obtenido de `list_projects`. Devuelve el nombre del proyecto y los casos en estado `PROCESADO` (listos para ejecutar).
+Lista paginada de los **casos de prueba** (internamente "processes") de un proyecto al que el usuario tiene acceso. Requiere el `projectId` obtenido de `list_projects`. Devuelve el nombre del proyecto y los casos en **todos sus estados** (`DRAFT`, `INICIADO`, `AWAITING_APPROVAL`, `PROCESADO`, `ERROR`), cada uno con su campo `status`. Solo los `PROCESADO` están listos para ejecutar — el resto sirve para ver en qué estado quedó cada generación.
 
 **Input**:
 ```json
@@ -62,8 +62,9 @@ Lista paginada de los **casos de prueba** (internamente "processes") de un proye
   "projectId": 12,
   "projectName": "Checkout Web",
   "cases": [
+    { "caseId": 376, "title": "Sin título", "status": "INICIADO" },
     { "caseId": 375, "title": "Test QR Payment Flow with Predefined Amount", "status": "PROCESADO" },
-    { "caseId": 374, "title": "Checkout con cupón de descuento", "status": "PROCESADO" }
+    { "caseId": 374, "title": "Checkout con cupón de descuento", "status": "ERROR" }
   ],
   "pagination": {
     "currentPage": 1, "pageSize": 10,
@@ -73,46 +74,36 @@ Lista paginada de los **casos de prueba** (internamente "processes") de un proye
 }
 ```
 
-El `caseId` de cada caso es el ID que usan `fetch_test_case`, `fetch_additional_cases`, `get_presigned_url` y `submit_test_result`. Mostrale la lista al usuario y pedí confirmación antes de ejecutar.
+El `caseId` de cada caso es el ID (el `processId`) que usan `fetch_cases`, `get_presigned_url` y `submit_test_result`. Mostrale la lista al usuario y pedí confirmación antes de ejecutar. Para monitorear una generación recién disparada con `generate_analysis`, poleá esta tool y observá el `status` hasta que pase a `PROCESADO`.
 
-### 3. `fetch_test_case`
+### 3. `fetch_cases`
 
-Detalle del happy path de un test case.
+Trae los casos generados de un proceso (happy path, casos adicionales, escenarios Gherkin y análisis UX/UI) en **una sola llamada**. Reemplaza a las antiguas `fetch_test_case` y `fetch_additional_cases`. Por defecto trae **happy path + adicionales**; activá `includeGherkin`/`includeUxUi` para sumarlos, o poné `includeHappyPath`/`includeAdditionals` en `false` para filtrarlos.
 
 **Input**:
 ```json
-{ "caseId": "375" }
-```
-
-**Output**:
-```json
 {
-  "testCaseId": 375,
-  "title": "Test QR Payment Flow with Predefined Amount",
-  "steps": [
-    { "stepNumber": 1, "action": "Scan QR code with device camera" },
-    { "stepNumber": 2, "action": "Verify predefined amount matches expected value" }
-  ]
+  "processId": 375,
+  "includeHappyPath": true,
+  "includeAdditionals": true,
+  "includeGherkin": false,
+  "includeUxUi": false
 }
 ```
-
-Los `steps` son **descripciones en lenguaje natural**. Vos (la IA) sos la responsable de traducirlas en acciones concretas del browser (click, type, wait, screenshot).
-
-### 4. `fetch_additional_cases`
-
-Casos alternativos asociados (edge cases, flujos de error, validaciones extra).
-
-**Input**:
-```json
-{ "caseId": "375" }
-```
+(todos los `include*` son opcionales; `includeHappyPath`/`includeAdditionals` default `true`, `includeGherkin`/`includeUxUi` default `false`. Solo `processId` es requerido.)
 
 **Output**:
 ```json
 {
-  "testCaseId": 375,
-  "totalAdditionalCases": 4,
-  "additionalCases": [
+  "processId": 375,
+  "happyPath": {
+    "title": "Test QR Payment Flow with Predefined Amount",
+    "steps": [
+      { "stepNumber": 1, "action": "Scan QR code with device camera" },
+      { "stepNumber": 2, "action": "Verify predefined amount matches expected value" }
+    ]
+  },
+  "additionals": [
     {
       "id": 1,
       "title": "QR expirado",
@@ -125,13 +116,16 @@ Casos alternativos asociados (edge cases, flujos de error, validaciones extra).
       ],
       "expectedResults": { "message": "QR code expired" }
     }
-  ]
+  ],
+  "totalAdditionalCases": 4
 }
 ```
 
-Llamalo **después de `fetch_test_case`** si el usuario pidió explícitamente "ejecutá todos los casos" o si el happy path falló y hay que probar el camino negativo.
+- Los campos cuyo flag esté en `false` se omiten de la respuesta. Con `includeGherkin: true` se agrega `gherkin: [{ name, classification, steps: { given, when[], then[] } }]`; con `includeUxUi: true` se agrega `uxUi: { summary, payload }` (o `null` si el proceso no tiene análisis UX/UI).
+- Los `steps` del happy path son **descripciones en lenguaje natural**. Vos (la IA) sos la responsable de traducirlas en acciones concretas del browser (click, type, wait, screenshot).
+- Para ejecutar solo el happy path, pedí `{ processId, includeAdditionals: false }`. Para "ejecutá todos los casos", dejá el default (happy + adicionales).
 
-### 5. `get_presigned_url`
+### 4. `get_presigned_url`
 
 Genera una URL firmada para subir un screenshot directamente a S3. **Úsalo SIEMPRE antes de subir screenshots** — no envíes imágenes en base64 inline.
 
@@ -157,7 +151,7 @@ Genera una URL firmada para subir un screenshot directamente a S3. **Úsalo SIEM
 - Hacé un `PUT` HTTP al `uploadUrl` con el binario crudo del screenshot (no form-data) y el header `Content-Type` correcto.
 - Guardá el `publicUrl` para pasarlo después a `submit_test_result`.
 
-### 6. `submit_test_result`
+### 5. `submit_test_result`
 
 Reporta el resultado final de la ejecución.
 
@@ -195,46 +189,15 @@ Reglas:
 - `errorMessage` solo en steps con status distinto de `PASS`.
 - Solo podés reportar sobre procesos de los que sos dueño (validación server-side).
 
-### 7. `create_analysis_draft`
+### 6. `generate_analysis`
 
-**Paso 1 de la generación de casos a partir de un documento funcional.** Crea un proceso en estado `DRAFT` y devuelve una URL firmada de S3 (`PUT`) para subir el documento. (Tool **solo MCP**: no tiene equivalente REST.)
+Genera casos de prueba de forma **asíncrona** a partir del **texto** de un documento funcional, en **una sola llamada**: crea el proceso y dispara la generación. Pasás el contenido del documento como texto plano en `documentText` — **no se sube ningún archivo** (sin base64, sin presigned URLs). (Tool **solo MCP**: no tiene equivalente REST.)
 
 **Input**:
 ```json
 {
   "projectId": 12,
-  "fileName": "spec-checkout.pdf",
-  "contentType": "application/pdf"
-}
-```
-
-**Output**:
-```json
-{
-  "processId": 481,
-  "uploadUrl": "https://bucket.s3.amazonaws.com/processes/481/uuid_spec-checkout.pdf?X-Amz-Algorithm=...",
-  "publicUrl": "https://bucket.s3.amazonaws.com/processes/481/uuid_spec-checkout.pdf"
-}
-```
-
-- `fileName`: máximo 255 caracteres.
-- `contentType` debe ser **uno de**: `application/pdf` o `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx). Cualquier otro es rechazado.
-- Después de llamarlo, hacé un `PUT` HTTP del documento al `uploadUrl` con el header `Content-Type` que coincida con el `contentType` enviado.
-- **Gotcha**: la URL está firmada con solo los headers `host;content-type`. **No envíes ningún header `x-amz-checksum-*`** (aunque aparezca en el query string) o S3 devuelve `403`.
-- Valida acceso al proyecto + permiso `CREATE_EXECUTIONS` del lado del servidor.
-- Guardá el `publicUrl` para pasarlo a `generate_analysis` en el paso 2.
-
-### 8. `generate_analysis`
-
-**Paso 2** (después de `create_analysis_draft` + subir el archivo). Genera casos de prueba de forma **asíncrona** a partir del documento subido. (Tool **solo MCP**: no tiene equivalente REST.)
-
-**Input**:
-```json
-{
-  "processId": 481,
-  "fileUrl": "https://bucket.s3.amazonaws.com/processes/481/uuid_spec-checkout.pdf",
-  "documentType": "pdf",
-  "originalName": "spec-checkout.pdf",
+  "documentText": "Especificación funcional del checkout: el usuario puede pagar con tarjeta...",
   "prompt": "Enfocate en los flujos de pago con tarjeta",
   "industry": "Fintech",
   "functionality": "Checkout",
@@ -249,16 +212,15 @@ Reglas:
 ```json
 {
   "processId": 481,
-  "message": "Generation started"
+  "message": "Se comenzó el proceso 481"
 }
 ```
 
-- `fileUrl`: máximo 2000 caracteres. **Debe ser el `publicUrl`** devuelto por `create_analysis_draft` y apuntar a la carpeta de este mismo proceso (validación anti-SSRF del lado del servidor).
-- `documentType` debe ser `pdf` o `word`.
-- `originalName` (opcional), `prompt` (opcional, máximo 5000 caracteres), `industry`, `functionality`, `platform` (todos opcionales).
+- `projectId` y `documentText` son **requeridos**. `documentText`: texto plano del documento (máximo 2 MB). Si tenés un PDF/docx, extraé su texto y pasalo acá.
+- `prompt` (opcional, máximo 5000 caracteres), `industry`, `functionality`, `platform` (todos opcionales, con defaults sensatos del lado del servidor).
 - `additionals`, `gherkin`, `uxUi` (opcionales, default `false`): flags que controlan qué tipos de casos se generan además del happy path.
-- El proceso debe estar en estado `DRAFT` y pertenecerte (validación server-side). Usa el proveedor LLM activo de la empresa.
-- La generación es **asíncrona**: el output solo confirma que arrancó. **Poleá después** (ej. con `list_test_cases`) hasta que el caso esté en estado `PROCESADO`.
+- Valida acceso al proyecto + permiso `CREATE_EXECUTIONS` del lado del servidor. Usa el proveedor LLM activo de la empresa.
+- La generación es **asíncrona**: el output solo confirma que arrancó. **Poleá después** con `list_test_cases` y observá el `status` del caso hasta que pase a `PROCESADO` (o `ERROR`).
 
 ## Flujo recomendado (end-to-end)
 
@@ -267,9 +229,9 @@ Reglas:
                         → list_test_cases(projectId)  (casos del proyecto elegido)
                         → mostrar al usuario y pedir confirmación
 
-2. fetch_test_case     → obtener pasos del happy path
-3. (Opcional)
-   fetch_additional_cases → obtener casos alternativos si aplica
+2. fetch_cases(processId)  → obtener happy path + casos adicionales
+   (default: happy + adicionales. Para solo el happy path:
+    fetch_cases({ processId, includeAdditionals: false }))
 
 4. PRE-EJECUCIÓN:
    Confirmar con el usuario: URL objetivo, credenciales si aplican,
@@ -290,22 +252,19 @@ Reglas:
 
 ## Flujo de generación a partir de un documento
 
-Para **generar** casos de prueba (no ejecutarlos) a partir de un PDF o docx funcional:
+Para **generar** casos de prueba (no ejecutarlos) a partir de un documento funcional:
 
 ```
-1. create_analysis_draft({ projectId, fileName, contentType })
-                         → { processId, uploadUrl, publicUrl }
+1. Si tenés un PDF/docx, extraé su contenido como texto plano.
 
-2. PUT HTTP del PDF/docx al uploadUrl
-   - Solo header Content-Type (igual al contentType enviado)
-   - NO mandes headers x-amz-checksum-*  (si no, S3 devuelve 403)
-
-3. generate_analysis({ processId, fileUrl: publicUrl, documentType, ...flags })
+2. generate_analysis({ projectId, documentText, prompt?, ...flags })
                          → { processId, message }   (generación ASÍNCRONA)
 
-4. Poleá list_test_cases hasta que el caso esté en status PROCESADO,
-   luego fetch_test_case para obtener los pasos.
+3. Poleá list_test_cases y observá el status del caso hasta que pase
+   a PROCESADO (o ERROR), luego fetch_cases(processId) para los casos.
 ```
+
+El documento viaja como **texto plano** en `documentText` — no hay paso de subida a S3.
 
 ## Patrones anti-fallo
 
@@ -369,7 +328,7 @@ No intentes workarounds. Pedile al usuario que verifique con `list_projects` →
 > **Usuario**: Corré el test case 375 en staging.example.com
 >
 > **IA** (internamente):
-> 1. `fetch_test_case({ caseId: "375" })` → obtiene 5 pasos.
+> 1. `fetch_cases({ processId: 375, includeAdditionals: false })` → obtiene el happy path (5 pasos).
 > 2. Responde al usuario: "Voy a ejecutar 'Test QR Payment' (5 pasos) en staging.example.com. Incluye un pago simulado de $500. ¿Confirmás?"
 > 3. Usuario confirma.
 > 4. Por cada paso: ejecutar en browser → screenshot → `get_presigned_url` → PUT a S3.
@@ -391,9 +350,8 @@ No intentes workarounds. Pedile al usuario que verifique con `list_projects` →
 > **Usuario**: Ejecutá todos los casos del test 375.
 >
 > **IA**:
-> 1. `fetch_test_case({ caseId: "375" })` → happy path.
-> 2. `fetch_additional_cases({ caseId: "375" })` → 4 alternativos.
-> 3. Confirma con el usuario: "Voy a correr 1 happy path + 4 alternativos = 5 ejecuciones. ¿OK?"
+> 1. `fetch_cases({ processId: 375 })` → happy path + 4 alternativos (default trae ambos).
+> 2. Confirma con el usuario: "Voy a correr 1 happy path + 4 alternativos = 5 ejecuciones. ¿OK?"
 > 4. Ejecutá cada uno como `submit_test_result` separado.
 > 5. Resume: "5/5 ejecutados. 3 PASS, 1 FAIL, 1 ERROR. Detalles..."
 

@@ -2,7 +2,7 @@
 
 Guía para que asistentes de IA en distintos IDEs usen correctamente el **servidor MCP de TESSA** (Test Execution & Smart Synthesis Agent).
 
-TESSA expone 8 herramientas MCP para descubrir test cases, ejecutarlos en un navegador, subir screenshots, reportar resultados y generar análisis a partir de documentos. Esta skill le enseña a la IA el **flujo correcto** y los **patrones anti-fallo**.
+TESSA expone 6 herramientas MCP para descubrir test cases, ejecutarlos en un navegador, subir screenshots, reportar resultados y generar análisis a partir de documentos. Esta skill le enseña a la IA el **flujo correcto** y los **patrones anti-fallo**.
 
 ## ¿Qué es esto?
 
@@ -132,18 +132,16 @@ La respuesta trae un `token` que empieza con `qai_`. **Copialo ahora** — solo 
 
 **GitHub Copilot**: Copilot todavía no soporta MCP nativo en todas las plataformas. Si tu versión lo soporta (Copilot Chat en VS Code con extensión MCP bridge), usá la misma config que Cursor. Si no, la skill igual funciona como instructions — Copilot no va a ejecutar los tools pero va a entender los conceptos y escribir código correcto contra la API REST equivalente (`/api/mcp/*`).
 
-## Los 8 tools expuestos
+## Los 6 tools expuestos
 
 | Tool | Propósito |
 |---|---|
 | `list_projects` | Lista paginada de los proyectos accesibles del usuario (id + nombre) |
-| `list_test_cases` | Lista paginada de los casos de un proyecto (requiere `projectId`) |
-| `fetch_test_case` | Detalle de un test case con sus pasos (happy path) |
-| `fetch_additional_cases` | Casos alternativos asociados a un test case |
+| `list_test_cases` | Lista paginada de los casos de un proyecto (requiere `projectId`); devuelve casos en todos los estados (`DRAFT`, `INICIADO`, `AWAITING_APPROVAL`, `PROCESADO`, `ERROR`), cada uno con su `status` |
+| `fetch_cases` | Trae happy path + adicionales + gherkin + uxui de un proceso en una sola llamada; filtros opcionales por tipo |
 | `get_presigned_url` | Genera URL firmada para subir un screenshot a S3 |
 | `submit_test_result` | Reporta el resultado de una ejecución + steps + screenshots |
-| `create_analysis_draft` | Paso 1 de la generación a partir de docs: crea un proceso DRAFT y devuelve un presigned PUT URL para subir un documento funcional (PDF/Word) |
-| `generate_analysis` | Paso 2: genera test cases (de forma asíncrona) a partir del documento subido |
+| `generate_analysis` | Genera test cases de forma asíncrona a partir del texto de un documento funcional, en una sola llamada |
 
 Detalles completos en `SKILL.md` (fuente canónica).
 

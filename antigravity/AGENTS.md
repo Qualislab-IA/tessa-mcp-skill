@@ -19,7 +19,7 @@ Activate this workflow when the user:
 - Wants to generate test cases from a functional document (PDF/Word).
 - Mentions TESSA, QualisLab, or automated testing.
 
-## The 8 tools
+## The 6 tools
 
 ### `list_projects({ page, pageSize })`
 Paginated list of the projects the user can access (id + name).
@@ -29,16 +29,16 @@ Returns `{ projects: [{id, name}], pagination: {...} }`.
 ### `list_test_cases({ projectId, page, pageSize })`
 Paginated list of the test cases in a project. **Requires `projectId`** (from `list_projects`).
 → Use when no specific `caseId` was given, after choosing a project.
+Returns the test cases in **all states** (`DRAFT`, `INICIADO`, `AWAITING_APPROVAL`, `PROCESADO`, `ERROR`), each with its own `status` field — only `PROCESADO` ones are ready to execute; the rest tell you how each generation ended up.
 Returns `{ projectId, projectName, cases: [{caseId, title, status}], pagination: {...} }`.
+→ Also poll this after `generate_analysis` and watch each case's `status` until it becomes `PROCESADO` (or `ERROR`).
 
-### `fetch_test_case({ caseId })`
-Happy path details.
-Returns `{ testCaseId, title, steps: [{stepNumber, action}] }`.
-**The `action` fields are natural-language descriptions** — translate them into concrete browser actions (navigate, click, fill, wait, etc.).
-
-### `fetch_additional_cases({ caseId })`
-Alternative / edge-case scenarios.
-Only call when user asked for "all cases" or after the happy path failed.
+### `fetch_cases({ processId, includeHappyPath?, includeAdditionals?, includeGherkin?, includeUxUi? })`
+Fetches a process's generated cases (happy path, additional cases, Gherkin scenarios, UX/UI analysis) in **a single call**. Replaces the old `fetch_test_case` and `fetch_additional_cases`.
+- Only `processId` is required. `includeHappyPath`/`includeAdditionals` default `true`; `includeGherkin`/`includeUxUi` default `false`. Set a flag to `false` to filter it out.
+- Returns `{ processId, happyPath, additionals, totalAdditionalCases }` by default. With `includeGherkin: true` adds `gherkin: [{ name, classification, steps: { given, when[], then[] } }]`; with `includeUxUi: true` adds `uxUi: { summary, payload }` (or `null` if the process has no UX/UI analysis). Fields whose flag is `false` are omitted.
+- **The happy-path `steps` are natural-language descriptions** — translate them into concrete browser actions (navigate, click, fill, wait, etc.).
+- For happy-path only, pass `{ processId, includeAdditionals: false }`. For "run all cases", keep the default (happy + additionals).
 
 ### `get_presigned_url({ fileName, contentType, caseId? })`
 **Use for every screenshot.** Returns `{ uploadUrl, publicUrl }`.
@@ -54,47 +54,40 @@ Final execution report.
 - `screenshotUrl` must be a `publicUrl` from `get_presigned_url`. **No base64.**
 - Global status rule: worst wins (FAIL > ERROR > SKIPPED > PASS).
 
-### `create_analysis_draft({ projectId, fileName, contentType })`
-Step 1 of generating test cases from a functional document. Creates a `DRAFT` process and returns a presigned S3 **PUT** URL to upload the document.
-- `projectId` (number), `fileName` (string, ≤255), `contentType` (string).
-- Allowed `contentType`: `application/pdf` or `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx) **only**.
-- Returns `{ processId, uploadUrl, publicUrl }`.
-- Then HTTP **PUT** the document binary to `uploadUrl` with the matching `Content-Type`.
-- **Gotcha:** the URL is signed with only `host;content-type` headers — do NOT add any `x-amz-checksum-*` header (even though it appears in the query string) or S3 returns `403`.
-- Validates project access + `CREATE_EXECUTIONS` permission server-side.
-
-### `generate_analysis({ processId, fileUrl, documentType, originalName?, prompt?, industry?, functionality?, platform?, additionals?, gherkin?, uxUi? })`
-Step 2 (after `create_analysis_draft` + uploading the file). Generates test cases **asynchronously** from the uploaded document.
-- `processId` (number), `fileUrl` (string, ≤2000), `documentType`: `'pdf' | 'word'`.
-- Optional: `originalName`, `prompt` (≤5000), `industry`, `functionality`, `platform`, `additionals` (default `false`), `gherkin` (default `false`), `uxUi` (default `false`).
-- Returns `{ processId, message }` — **ASYNC**; poll afterwards (e.g. `list_test_cases`) until the case is `PROCESADO`.
-- `fileUrl` must be the `publicUrl` from step 1 (must point to this process's folder — anti-SSRF). Process must be `DRAFT` and owned by the caller. Uses the company's active LLM provider.
+### `generate_analysis({ projectId, documentText, prompt?, industry?, functionality?, platform?, additionals?, gherkin?, uxUi? })`
+Generates test cases **asynchronously** from the **text** of a functional document, in **a single call**: it creates the process and fires the generation. You pass the document content as plain text in `documentText` — **no file is uploaded** (no base64, no presigned URLs). MCP-only — no REST equivalent.
+- `projectId` (number) and `documentText` (plain text, max 2 MB) are **required**. If you have a PDF/docx, extract its text and pass it here.
+- Optional: `prompt` (≤5000), `industry`, `functionality`, `platform` (sensible server-side defaults), `additionals` (default `false`), `gherkin` (default `false`), `uxUi` (default `false`).
+- Returns `{ processId, message }` — **ASYNC**; the output only confirms it started. Poll afterwards with `list_test_cases` and watch the case's `status` until it becomes `PROCESADO` (or `ERROR`).
+- Validates project access + `CREATE_EXECUTIONS` permission server-side. Uses the company's active LLM provider.
 
 ## End-to-end workflow
 
 ```
 1. If no caseId → list_projects → pick project → list_test_cases({ projectId }) → user chooses
-2. fetch_test_case → get steps
-3. (Optional) fetch_additional_cases
-4. CONFIRM with user: target URL + side-effects summary
-5. For each step:
+2. fetch_cases({ processId }) → happy path + additional cases
+   (default: happy + additionals. For happy-path only: fetch_cases({ processId, includeAdditionals: false }))
+3. CONFIRM with user: target URL + side-effects summary
+4. For each step:
    a. Translate action → browser commands
    b. Execute, measure duration
    c. Screenshot
    d. get_presigned_url → PUT binary → save publicUrl
    e. Record step status
-6. submit_test_result
-7. Summary to user: global status + failing steps + screenshot URLs
+5. submit_test_result
+6. Summary to user: global status + failing steps + screenshot URLs
 ```
 
-## Doc-based generation workflow (PDF/Word → test cases)
+## Doc-based generation workflow (functional document → test cases)
 
 ```
-1. create_analysis_draft({ projectId, fileName, contentType }) → { processId, uploadUrl, publicUrl }
-2. HTTP PUT the PDF/docx binary to uploadUrl (set Content-Type only — NO x-amz-checksum-* header)
-3. generate_analysis({ processId, fileUrl: publicUrl, documentType, ...flags }) → { processId, message }
-4. Poll list_test_cases until the case is PROCESADO, then fetch_test_case for the steps
+1. If you have a PDF/docx, extract its content as plain text.
+2. generate_analysis({ projectId, documentText, prompt?, ...flags }) → { processId, message }   (ASYNC)
+3. Poll list_test_cases and watch the case's status until it becomes PROCESADO (or ERROR),
+   then fetch_cases({ processId }) for the cases.
 ```
+
+The document travels as **plain text** in `documentText` — there is no S3 upload step.
 
 ## Hard rules
 
@@ -133,7 +126,7 @@ Step 2 (after `create_analysis_draft` + uploading the file). Generates test case
 > **User**: Corré el caso 375 en https://staging.acme.com
 >
 > **You**:
-> 1. `fetch_test_case({ caseId: "375" })` → 5 steps retrieved.
+> 1. `fetch_cases({ processId: 375, includeAdditionals: false })` → 5 steps retrieved.
 > 2. "Voy a ejecutar 'Test QR Payment' (5 pasos) en https://staging.acme.com. Incluye un pago simulado de $500. ¿Confirmás?"
 > 3. (User: sí)
 > 4. Execute each step, screenshot, upload via `get_presigned_url`, collect results.
@@ -148,11 +141,10 @@ Step 2 (after `create_analysis_draft` + uploading the file). Generates test case
 |---|---|
 | `list_projects` | `GET /api/mcp/projects?page=N&pageSize=N` |
 | `list_test_cases` | `GET /api/mcp/projects/:projectId/test-cases?page=N&pageSize=N` |
-| `fetch_test_case` | `GET /api/mcp/test-case/:caseId` |
-| `fetch_additional_cases` | `GET /api/mcp/test-case/:caseId/additional-cases` |
+| `fetch_cases` | `GET /api/mcp/test-case/:caseId/cases?includeHappyPath=...&includeAdditionals=...&includeGherkin=...&includeUxUi=...` |
 | `get_presigned_url` | `GET /api/mcp/presigned-url?fileName=...&contentType=...&caseId=...` |
 | `submit_test_result` | `POST /api/mcp/test-result` |
 
-`create_analysis_draft` and `generate_analysis` are **MCP-only** — they have no REST equivalent.
+`generate_analysis` is **MCP-only** — it has no REST equivalent.
 
 Always with `Authorization: Bearer qai_<token>`.
