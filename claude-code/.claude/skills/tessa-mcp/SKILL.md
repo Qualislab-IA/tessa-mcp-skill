@@ -51,7 +51,7 @@ Fetch the generated cases of a process (happy path, additional cases, Gherkin sc
 Generate a pre-signed S3 URL for uploading a screenshot. **Use this for every screenshot — never inline base64.**
 - **Input**: `{ fileName: string, contentType: string, caseId?: string }`
 - **Allowed contentType**: `image/png`, `image/jpeg`, `image/jpg`, `image/webp` only.
-- **Output**: `{ uploadUrl, publicUrl }` — PUT the binary to `uploadUrl` with correct `Content-Type`, then save `publicUrl`.
+- **Output**: `{ uploadUrl, publicUrl, headers }` — PUT the binary to `uploadUrl` sending **every header in `headers` exactly as returned** (`Content-Type` plus the `x-amz-server-side-encryption*` headers that encrypt the file with the company's key), then save `publicUrl`. The headers are signed into the URL: a missing or altered one makes S3 reject the upload with 403.
 - **Always pass `caseId`** when available — it organizes uploads and validates project access.
 
 ### 5. `submit_test_result`

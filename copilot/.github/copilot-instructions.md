@@ -12,7 +12,7 @@ This project integrates with **TESSA** (Test Execution & Smart Synthesis Agent),
 1. **`list_projects({ page, pageSize })`** — lists the projects the user can access (id + name). Use first. Returns `{ projects: [{id,name}], pagination }`.
 2. **`list_test_cases({ projectId, page, pageSize })`** — lists the test cases in a project. Requires `projectId`. Returns `{ projectId, projectName, cases: [{caseId,title,status}], pagination }`. Returns cases in **all statuses** (`DRAFT`, `INICIADO`, `AWAITING_APPROVAL`, `PROCESADO`, `ERROR`), each with its own `status` — only `PROCESADO` ones are ready to execute; the rest let you see how each generation ended. Poll this tool after `generate_analysis` and watch the case `status` until it becomes `PROCESADO`.
 3. **`fetch_cases({ processId, includeHappyPath?, includeAdditionals?, includeGherkin?, includeUxUi? })`** — fetches a process's generated cases (happy path, additional cases, Gherkin scenarios and UX/UI analysis) in **one call**. Replaces the old `fetch_test_case` and `fetch_additional_cases`. Only `processId` is required; `includeHappyPath`/`includeAdditionals` default `true`, `includeGherkin`/`includeUxUi` default `false`. Returns `{ processId, happyPath, additionals, totalAdditionalCases }`, plus `gherkin` and/or `uxUi` when those flags are enabled. Fields whose flag is `false` are omitted. Happy-path `steps` are natural-language descriptions you (the AI) translate into concrete browser actions.
-4. **`get_presigned_url({ fileName, contentType, caseId? })`** — returns `{ uploadUrl, publicUrl }` for S3 screenshot upload.
+4. **`get_presigned_url({ fileName, contentType, caseId? })`** — returns `{ uploadUrl, publicUrl, headers }` for S3 screenshot upload. PUT with **every header in `headers` exactly as returned** (`Content-Type` + `x-amz-server-side-encryption*`, signed into the URL; a missing or altered one makes S3 reject the upload).
 5. **`submit_test_result({ caseId, status, executedUrl, totalDurationMs?, steps })`** — reports execution outcome.
 6. **`generate_analysis({ projectId, documentText, prompt?, industry?, functionality?, platform?, additionals?, gherkin?, uxUi? })`** — generates test cases **asynchronously** from a functional document's **plain text**, in **one call**: it creates the process and triggers generation. `projectId` and `documentText` are **required**. Pass the document content as plain text in `documentText` (max **2 MB**) — **no file upload, no base64, no presigned URLs**. If you have a PDF/docx, extract its text and pass it here. `prompt` ≤5000 chars; `industry`/`functionality`/`platform` are optional (server-side defaults); `additionals`/`gherkin`/`uxUi` are booleans (default `false`). Returns `{ processId, message }` — poll afterwards (e.g. `list_test_cases`) until the case is `PROCESADO`. Validates project access + `CREATE_EXECUTIONS` server-side; uses the company's active LLM provider.
 
@@ -62,8 +62,9 @@ When generating code that calls TESSA:
 - Read token from env var `TESSA_API_TOKEN` or config file, not inline.
 - For screenshot upload:
   ```ts
-  const { uploadUrl, publicUrl } = await tessa.getPresignedUrl({ fileName, contentType, caseId });
-  await fetch(uploadUrl, { method: 'PUT', body: screenshotBuffer, headers: { 'Content-Type': contentType } });
+  const { uploadUrl, publicUrl, headers } = await tessa.getPresignedUrl({ fileName, contentType, caseId });
+  // `headers` = Content-Type + x-amz-server-side-encryption*: all of them, as returned.
+  await fetch(uploadUrl, { method: 'PUT', body: screenshotBuffer, headers });
   // then use publicUrl in submit_test_result
   ```
 - For `submit_test_result`:
