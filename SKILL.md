@@ -142,13 +142,19 @@ Genera una URL firmada para subir un screenshot directamente a S3. **Úsalo SIEM
 ```json
 {
   "uploadUrl": "https://bucket.s3.amazonaws.com/executions/375/uuid_step-3-error.png?X-Amz-Algorithm=...",
-  "publicUrl": "https://bucket.s3.amazonaws.com/executions/375/uuid_step-3-error.png"
+  "publicUrl": "https://bucket.s3.amazonaws.com/executions/375/uuid_step-3-error.png",
+  "headers": {
+    "Content-Type": "image/png",
+    "x-amz-server-side-encryption": "aws:kms",
+    "x-amz-server-side-encryption-aws-kms-key-id": "arn:aws:kms:...",
+    "x-amz-server-side-encryption-bucket-key-enabled": "true"
+  }
 }
 ```
 
 - `contentType` debe ser uno de: `image/png`, `image/jpeg`, `image/jpg`, `image/webp`. Cualquier otro es rechazado.
 - `caseId` es **opcional** pero **pásalo siempre que sea posible** — organiza las imágenes por proceso y valida ownership.
-- Hacé un `PUT` HTTP al `uploadUrl` con el binario crudo del screenshot (no form-data) y el header `Content-Type` correcto.
+- Hacé un `PUT` HTTP al `uploadUrl` con el binario crudo del screenshot (no form-data) y **TODOS los `headers` de la respuesta, tal cual** (el `Content-Type` y los `x-amz-server-side-encryption*`: la encriptación del archivo con la llave de la empresa). Están firmados en la URL: si falta alguno o cambia un valor, S3 rechaza la subida con 403. Si la respuesta trae solo el `Content-Type`, mandá solo ese.
 - Guardá el `publicUrl` para pasarlo después a `submit_test_result`.
 
 ### 5. `submit_test_result`

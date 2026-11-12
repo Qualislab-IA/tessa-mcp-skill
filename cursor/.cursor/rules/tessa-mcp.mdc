@@ -55,7 +55,7 @@ Fetches a process's generated cases (happy path, additional cases, Gherkin scena
 ### `get_presigned_url({ fileName, contentType, caseId? })`
 Pre-signed S3 URL for uploading screenshots. **Always use this, never base64 inline.**
 - `contentType`: `image/png | image/jpeg | image/jpg | image/webp` only.
-- Returns `{ uploadUrl, publicUrl }`. PUT binary to `uploadUrl`, save `publicUrl`.
+- Returns `{ uploadUrl, publicUrl, headers }`. PUT binary to `uploadUrl` with **every header in `headers` exactly as returned** (`Content-Type` + `x-amz-server-side-encryption*`, signed into the URL; a missing or altered one makes S3 answer 403), save `publicUrl`.
 - **Always pass `caseId`** when available.
 
 ### `submit_test_result({ caseId, status, executedUrl, totalDurationMs?, steps })`

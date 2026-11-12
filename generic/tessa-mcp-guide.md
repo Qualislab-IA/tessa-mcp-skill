@@ -15,7 +15,7 @@ Use this markdown as context/rules for any IDE or agent that supports MCP but is
 | `list_projects` | `{ page, pageSize }` | Paginated list of the **projects** the user can access (id + name) |
 | `list_test_cases` | `{ projectId, page, pageSize }` | Test cases of an accessible project, in **all states** (returns project name + cases with their `status`) |
 | `fetch_cases` | `{ processId, includeHappyPath?, includeAdditionals?, includeGherkin?, includeUxUi? }` | Generated cases of a process in **one call** (replaces the old `fetch_test_case` + `fetch_additional_cases`) |
-| `get_presigned_url` | `{ fileName, contentType, caseId? }` | Pre-signed S3 URL for screenshot upload |
+| `get_presigned_url` | `{ fileName, contentType, caseId? }` | Pre-signed S3 URL for screenshot upload. Returns `{ uploadUrl, publicUrl, headers }`: PUT with every header in `headers`, as returned |
 | `submit_test_result` | `{ caseId, status, executedUrl, totalDurationMs?, steps }` | Final execution report |
 | `generate_analysis` | `{ projectId, documentText, ...optional }` | Generates test cases (async) from the **plain text** of a functional document, in a single call |
 
@@ -39,7 +39,7 @@ Brings the generated cases of a process (happy path, additional cases, Gherkin s
    a. Translate `step.action` (natural language) to browser actions.
    b. Execute, measure `durationMs`.
    c. Screenshot.
-   d. `get_presigned_url` → HTTP PUT binary to `uploadUrl` → save `publicUrl`.
+   d. `get_presigned_url` → HTTP PUT binary to `uploadUrl` with **all** the returned `headers` (`Content-Type` + `x-amz-server-side-encryption*`, signed into the URL; if one is missing or altered S3 answers 403) → save `publicUrl`.
    e. Record step result (status, duration, publicUrl, errorMessage).
 5. `submit_test_result` with full steps array.
 6. Summarize: global status, failed steps, screenshot URLs.

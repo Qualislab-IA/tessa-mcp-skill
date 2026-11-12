@@ -41,9 +41,9 @@ Fetches a process's generated cases (happy path, additional cases, Gherkin scena
 - For happy-path only, pass `{ processId, includeAdditionals: false }`. For "run all cases", keep the default (happy + additionals).
 
 ### `get_presigned_url({ fileName, contentType, caseId? })`
-**Use for every screenshot.** Returns `{ uploadUrl, publicUrl }`.
+**Use for every screenshot.** Returns `{ uploadUrl, publicUrl, headers }`.
 - Allowed `contentType`: `image/png`, `image/jpeg`, `image/jpg`, `image/webp`.
-- PUT the binary image to `uploadUrl` with correct `Content-Type` header.
+- PUT the binary image to `uploadUrl` sending **every header in `headers` exactly as returned** (`Content-Type` + the `x-amz-server-side-encryption*` headers that encrypt the file with the company's key). They are signed into the URL: a missing or altered header makes S3 reject the upload (403).
 - Save `publicUrl` for later inclusion in `submit_test_result`.
 - Always pass `caseId` when available — organizes the S3 bucket + validates ownership.
 
